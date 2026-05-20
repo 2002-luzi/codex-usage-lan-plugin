@@ -8,6 +8,7 @@ stderr so the MCP stdio transport stays clean.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import errno
 import functools
@@ -24,12 +25,18 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 SERVER_NAME = "codex-usage-lan"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.2"
+TOKEN_REFRESH_INTERVAL_SECONDS = 8 * 24 * 60 * 60
+CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_OAUTH_REFRESH_URL = "https://auth.openai.com/oauth/token"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -38,6 +45,16 @@ NO_CACHE_HEADERS = {
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def local_now() -> str:
+    return dt.datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+
+def local_from_epoch(epoch_seconds: Any) -> str:
+    if not isinstance(epoch_seconds, (int, float)):
+        return ""
+    return dt.datetime.fromtimestamp(float(epoch_seconds)).astimezone().replace(microsecond=0).isoformat()
 
 
 def log(message: str) -> None:
@@ -289,13 +306,22 @@ def clamp_pct(value: float) -> int:
     return int(round(max(0.0, min(100.0, value))))
 
 
+def parse_last_refresh(value: Any) -> Optional[dt.datetime]:
+    parsed = parse_event_time(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
 def format_reset_delta(reset_epoch_seconds: Any) -> Tuple[str, str]:
     if not isinstance(reset_epoch_seconds, (int, float)):
         return "unknown", ""
 
     reset_dt = dt.datetime.fromtimestamp(float(reset_epoch_seconds), dt.timezone.utc)
     seconds = int((reset_dt - dt.datetime.now(dt.timezone.utc)).total_seconds())
-    reset_at = reset_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    reset_at = local_from_epoch(reset_epoch_seconds)
     if seconds <= 0:
         return "now", reset_at
 
@@ -333,7 +359,7 @@ def rate_limit_usage_from_event(event: Dict[str, Any], interval_seconds: int, so
         "account": "",
         "plan_type": rate_limits.get("plan_type") or "",
         "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
-        "scraped_at": utc_now(),
+        "scraped_at": local_now(),
         "sample_interval_seconds": int(interval_seconds),
         "source_file": compact_home(source_file),
     }
@@ -392,6 +418,194 @@ def parse_latest_rate_limits(interval_seconds: int) -> Dict[str, Any]:
     if best_event is None or best_path is None:
         raise ValueError("could not find Codex rate_limits events in session files")
     return rate_limit_usage_from_event(best_event, interval_seconds, best_path)
+
+
+def codex_home() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+
+
+def auth_path() -> pathlib.Path:
+    return codex_home() / "auth.json"
+
+
+def decode_jwt_claims(token: str) -> Dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def load_codex_auth() -> Tuple[pathlib.Path, Dict[str, Any]]:
+    path = auth_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Codex auth file not found: {compact_home(path)}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Codex auth file is not valid JSON: {compact_home(path)}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Codex auth file has unexpected shape: {compact_home(path)}")
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict) or not tokens.get("access_token"):
+        raise ValueError(f"Codex auth file does not contain OAuth tokens: {compact_home(path)}")
+    return path, data
+
+
+def save_codex_auth(path: pathlib.Path, data: Dict[str, Any]) -> None:
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def refresh_codex_token(path: pathlib.Path, data: Dict[str, Any]) -> Dict[str, Any]:
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise ValueError("Codex OAuth refresh token is missing")
+
+    body = json.dumps(
+        {
+            "client_id": CODEX_OAUTH_CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": "openid profile email",
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        CODEX_OAUTH_REFRESH_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            refreshed = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Codex OAuth token refresh failed with HTTP {exc.code}: {detail[:160]}") from exc
+    except Exception as exc:
+        raise ValueError(f"Codex OAuth token refresh failed: {exc}") from exc
+
+    if not isinstance(refreshed, dict) or not refreshed.get("access_token"):
+        raise ValueError("Codex OAuth token refresh returned no access_token")
+
+    next_tokens = dict(tokens)
+    for key in ("access_token", "refresh_token", "id_token"):
+        if isinstance(refreshed.get(key), str) and refreshed[key]:
+            next_tokens[key] = refreshed[key]
+    data["tokens"] = next_tokens
+    data["last_refresh"] = utc_now()
+    save_codex_auth(path, data)
+    return data
+
+
+def ensure_fresh_codex_auth() -> Dict[str, Any]:
+    path, data = load_codex_auth()
+    last_refresh = parse_last_refresh(data.get("last_refresh"))
+    if last_refresh is None or (dt.datetime.now(dt.timezone.utc) - last_refresh).total_seconds() > TOKEN_REFRESH_INTERVAL_SECONDS:
+        log("refreshing Codex OAuth access token")
+        return refresh_codex_token(path, data)
+    return data
+
+
+def fetch_codex_usage_api(auth: Dict[str, Any]) -> Dict[str, Any]:
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise ValueError("Codex OAuth access token is missing")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    account_id = tokens.get("account_id")
+    if isinstance(account_id, str) and account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    request = urllib.request.Request(CODEX_USAGE_URL, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Codex usage API failed with HTTP {exc.code}: {detail[:160]}") from exc
+    except Exception as exc:
+        raise ValueError(f"Codex usage API failed: {exc}") from exc
+
+
+def fetch_codex_usage_api_with_retry() -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    path, auth = load_codex_auth()
+    last_refresh = parse_last_refresh(auth.get("last_refresh"))
+    if last_refresh is None or (dt.datetime.now(dt.timezone.utc) - last_refresh).total_seconds() > TOKEN_REFRESH_INTERVAL_SECONDS:
+        log("refreshing Codex OAuth access token")
+        auth = refresh_codex_token(path, auth)
+
+    try:
+        return fetch_codex_usage_api(auth), auth
+    except ValueError as exc:
+        if "HTTP 401" not in str(exc) and "HTTP 403" not in str(exc):
+            raise
+        log("Codex usage API rejected token; refreshing once")
+        auth = refresh_codex_token(path, auth)
+        return fetch_codex_usage_api(auth), auth
+
+
+def window_usage_from_api(prefix: str, window: Dict[str, Any], usage: Dict[str, Any]) -> None:
+    used = float(window.get("used_percent", 0) or 0)
+    reset = window.get("reset_at")
+    reset_text, reset_at = format_reset_delta(reset)
+    usage[f"{prefix}_pct"] = clamp_pct(100.0 - used)
+    usage[f"{prefix}_used_pct"] = clamp_pct(used)
+    usage[f"{prefix}_reset"] = reset_text
+    usage[f"{prefix}_reset_at"] = reset_at
+    if isinstance(window.get("limit_window_seconds"), (int, float)):
+        usage[f"{prefix}_window_seconds"] = int(window["limit_window_seconds"])
+
+
+def usage_from_oauth_api(interval_seconds: int) -> Dict[str, Any]:
+    raw, auth = fetch_codex_usage_api_with_retry()
+    if not isinstance(raw, dict):
+        raise ValueError("Codex usage API returned unexpected JSON")
+
+    rate_limit = raw.get("rate_limit") if isinstance(raw.get("rate_limit"), dict) else {}
+    primary = rate_limit.get("primary_window") if isinstance(rate_limit.get("primary_window"), dict) else {}
+    secondary = rate_limit.get("secondary_window") if isinstance(rate_limit.get("secondary_window"), dict) else {}
+    if not primary and not secondary:
+        raise ValueError("Codex usage API returned no rate_limit windows")
+
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    claims = decode_jwt_claims(tokens.get("id_token", "")) if isinstance(tokens.get("id_token"), str) else {}
+    auth_claim = claims.get("https://api.openai.com/auth")
+    auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
+    include_account = os.environ.get("CODEX_USAGE_LAN_INCLUDE_ACCOUNT", "").lower() in ("1", "true", "yes")
+    usage: Dict[str, Any] = {
+        "account": claims.get("email") if include_account else "",
+        "plan_type": raw.get("plan_type") or auth_claim.get("chatgpt_plan_type", ""),
+        "rate_limit_reached_type": raw.get("rate_limit_reached_type"),
+        "scraped_at": local_now(),
+        "sample_interval_seconds": int(interval_seconds),
+    }
+
+    if primary:
+        window_usage_from_api("five_h", primary, usage)
+    if secondary:
+        window_usage_from_api("weekly", secondary, usage)
+
+    credits = raw.get("credits") if isinstance(raw.get("credits"), dict) else None
+    if credits is not None:
+        usage["credits"] = {
+            "has_credits": bool(credits.get("has_credits")),
+            "unlimited": bool(credits.get("unlimited")),
+            "balance": credits.get("balance"),
+        }
+    return usage
 
 
 def get_lan_ip() -> str:
@@ -470,29 +684,35 @@ class SharedState:
 
 def generate_data(args: argparse.Namespace, state: SharedState) -> Dict[str, Any]:
     data_path = pathlib.Path(args.dir).expanduser() / "data.json"
-    http_info = build_http_info(args.host, args.port, data_path)
-    session_scan = scan_session_files()
 
     try:
-        usage = parse_latest_rate_limits(args.interval)
+        usage = usage_from_oauth_api(args.interval)
         payload: Dict[str, Any] = {
             "ok": True,
-            "generated_at": utc_now(),
-            "source": "codex_session_rate_limits",
-            "http": http_info,
+            "generated_at": local_now(),
+            "source": "codex_oauth_api",
             "usage": usage,
-            "session_scan": session_scan,
         }
     except Exception as exc:
-        log(f"usage generation failed: {exc}")
-        payload = {
-            "ok": False,
-            "generated_at": utc_now(),
-            "error": str(exc),
-            "source": "codex_session_rate_limits",
-            "http": http_info,
-            "session_scan": session_scan,
-        }
+        log(f"OAuth usage generation failed: {exc}")
+        try:
+            usage = parse_latest_rate_limits(args.interval)
+            usage["fallback_reason"] = str(exc)
+            payload = {
+                "ok": True,
+                "generated_at": local_now(),
+                "source": "codex_session_rate_limits",
+                "usage": usage,
+            }
+        except Exception as fallback_exc:
+            log(f"session rate-limit fallback failed: {fallback_exc}")
+            payload = {
+                "ok": False,
+                "generated_at": local_now(),
+                "error": str(exc),
+                "fallback_error": str(fallback_exc),
+                "source": "codex_oauth_api",
+            }
 
     try:
         atomic_write_json(data_path, payload)
@@ -509,10 +729,9 @@ def write_startup_payload(args: argparse.Namespace, state: SharedState) -> None:
     data_path = pathlib.Path(args.dir).expanduser() / "data.json"
     payload = {
         "ok": False,
-        "generated_at": utc_now(),
+        "generated_at": local_now(),
         "status": "starting",
         "source": "startup",
-        "http": build_http_info(args.host, args.port, data_path),
         "message": "usage data refresh is running in the background",
     }
     try:

@@ -23,7 +23,7 @@ codex-usage-lan-plugin/
 3. The plugin points `mcpServers` to `.mcp.json`.
 4. Codex starts the bundled MCP server from the plugin directory with `python3 ./bin/codex_usage_lan_mcp.py`.
 5. The MCP server immediately writes a startup `~/.codex-usage-lan/public/data.json`.
-6. A background thread refreshes `data.json` with Codex usage data every 60 seconds.
+6. A background thread refreshes `data.json` with Codex OAuth usage data every 60 seconds.
 7. A second background thread serves `/data.json` and `/healthz` over HTTP.
 
 This plugin does not declare hooks and does not require `/hooks` trust.
@@ -164,28 +164,36 @@ Successful generation:
 ```json
 {
   "ok": true,
-  "generated_at": "2026-05-20T10:00:00Z",
-  "source": "codex_session_rate_limits",
+  "generated_at": "2026-05-20T18:03:36+08:00",
+  "source": "codex_oauth_api",
   "usage": {
-    "five_h_pct": 80,
-    "five_h_used_pct": 20,
-    "five_h_reset": "1h 23m",
-    "five_h_reset_at": "2026-05-20T11:23:00Z",
-    "weekly_pct": 55,
-    "weekly_used_pct": 45,
-    "weekly_reset": "2d 4h",
-    "weekly_reset_at": "2026-05-22T14:00:00Z",
-    "model": "gpt-5.3-codex",
     "account": "",
+    "credits": {
+      "balance": "0",
+      "has_credits": false,
+      "unlimited": false
+    },
+    "five_h_pct": 33,
+    "five_h_used_pct": 67,
+    "five_h_reset": "2h 42m",
+    "five_h_reset_at": "2026-05-20T20:46:06+08:00",
+    "five_h_window_seconds": 18000,
     "plan_type": "plus",
-    "scraped_at": "2026-05-20T10:00:00Z",
+    "rate_limit_reached_type": null,
     "sample_interval_seconds": 60,
-    "source_file": "~/.codex/sessions/2026/05/20/rollout-...jsonl"
+    "scraped_at": "2026-05-20T18:03:36+08:00",
+    "weekly_pct": 76,
+    "weekly_used_pct": 24,
+    "weekly_reset": "6d 16h",
+    "weekly_reset_at": "2026-05-27T10:28:42+08:00",
+    "weekly_window_seconds": 604800
   }
 }
 ```
 
-Immediately after startup, `/data.json` can briefly show a startup placeholder while the background refresh reads the latest Codex session file:
+`account` is blank by default so the LAN endpoint does not broadcast your email address. Set `CODEX_USAGE_LAN_INCLUDE_ACCOUNT=1` before starting Codex if you want to include it.
+
+Immediately after startup, `/data.json` can briefly show a startup placeholder while the background refresh calls the Codex OAuth usage API:
 
 ```json
 {
@@ -202,9 +210,9 @@ On failure, the server still writes JSON:
 ```json
 {
   "ok": false,
-  "generated_at": "2026-05-20T10:00:00Z",
-  "source": "codex_session_rate_limits",
-  "error": "could not find Codex rate_limits events in session files"
+  "generated_at": "2026-05-20T18:03:36+08:00",
+  "source": "codex_oauth_api",
+  "error": "Codex usage API failed with HTTP 401: ..."
 }
 ```
 
@@ -212,7 +220,7 @@ On failure, the server still writes JSON:
 
 ### No usage data
 
-The server reads Codex `rate_limits` events from `~/.codex/sessions/**/*.jsonl`. Run at least one Codex turn after login, then refresh `/data.json`. If your Codex session directory is somewhere else, set `CODEX_USAGE_LAN_SESSION_DIR`.
+The server reads OAuth credentials from `~/.codex/auth.json` or `$CODEX_HOME/auth.json`, refreshes the access token when needed, then calls `https://chatgpt.com/backend-api/wham/usage`. Run `codex` and complete login if this file is missing or stale. If the OAuth request fails, the server falls back to the latest `rate_limits` event in `~/.codex/sessions/**/*.jsonl`.
 
 ### Port 8000 is occupied
 
