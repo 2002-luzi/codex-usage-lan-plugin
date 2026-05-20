@@ -276,6 +276,124 @@ def scan_session_files(limit: int = 12) -> Dict[str, Any]:
     }
 
 
+def parse_event_time(value: Any) -> Optional[dt.datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def clamp_pct(value: float) -> int:
+    return int(round(max(0.0, min(100.0, value))))
+
+
+def format_reset_delta(reset_epoch_seconds: Any) -> Tuple[str, str]:
+    if not isinstance(reset_epoch_seconds, (int, float)):
+        return "unknown", ""
+
+    reset_dt = dt.datetime.fromtimestamp(float(reset_epoch_seconds), dt.timezone.utc)
+    seconds = int((reset_dt - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    reset_at = reset_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if seconds <= 0:
+        return "now", reset_at
+
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = max(1, rem // 60)
+    if days:
+        return f"{days}d {hours}h", reset_at
+    if hours:
+        return f"{hours}h {minutes}m", reset_at
+    return f"{minutes}m", reset_at
+
+
+def rate_limit_usage_from_event(event: Dict[str, Any], interval_seconds: int, source_file: pathlib.Path) -> Dict[str, Any]:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    rate_limits = payload.get("rate_limits") if isinstance(payload.get("rate_limits"), dict) else {}
+    primary = rate_limits.get("primary") if isinstance(rate_limits.get("primary"), dict) else {}
+    secondary = rate_limits.get("secondary") if isinstance(rate_limits.get("secondary"), dict) else {}
+
+    primary_used = float(primary.get("used_percent", 0) or 0)
+    secondary_used = float(secondary.get("used_percent", 0) or 0)
+    five_h_reset, five_h_reset_at = format_reset_delta(primary.get("resets_at"))
+    weekly_reset, weekly_reset_at = format_reset_delta(secondary.get("resets_at"))
+
+    return {
+        "five_h_pct": clamp_pct(100.0 - primary_used),
+        "five_h_used_pct": clamp_pct(primary_used),
+        "five_h_reset": five_h_reset,
+        "five_h_reset_at": five_h_reset_at,
+        "weekly_pct": clamp_pct(100.0 - secondary_used),
+        "weekly_used_pct": clamp_pct(secondary_used),
+        "weekly_reset": weekly_reset,
+        "weekly_reset_at": weekly_reset_at,
+        "model": payload.get("model") or "unknown",
+        "account": "",
+        "plan_type": rate_limits.get("plan_type") or "",
+        "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+        "scraped_at": utc_now(),
+        "sample_interval_seconds": int(interval_seconds),
+        "source_file": compact_home(source_file),
+    }
+
+
+def parse_latest_rate_limits(interval_seconds: int) -> Dict[str, Any]:
+    codex_dir = pathlib.Path(os.environ.get("CODEX_USAGE_LAN_SESSION_DIR", "~/.codex")).expanduser()
+    candidates: List[pathlib.Path] = []
+    for path in iter_session_candidates(codex_dir):
+        if path.suffix != ".jsonl":
+            continue
+        try:
+            path.stat()
+        except OSError:
+            continue
+        candidates.append(path)
+
+    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    best_event: Optional[Dict[str, Any]] = None
+    best_time: Optional[dt.datetime] = None
+    best_path: Optional[pathlib.Path] = None
+
+    for path in candidates[:80]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+
+        current_model = "unknown"
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            if isinstance(payload.get("model"), str):
+                current_model = payload["model"]
+            elif isinstance(payload.get("session_meta"), dict) and isinstance(payload["session_meta"].get("model"), str):
+                current_model = payload["session_meta"]["model"]
+
+            if not isinstance(payload.get("rate_limits"), dict):
+                continue
+
+            event_time = parse_event_time(event.get("timestamp"))
+            if event_time is None:
+                continue
+            payload["model"] = payload.get("model") or current_model
+            if best_time is None or event_time > best_time:
+                best_event = event
+                best_time = event_time
+                best_path = path
+
+    if best_event is None or best_path is None:
+        raise ValueError("could not find Codex rate_limits events in session files")
+    return rate_limit_usage_from_event(best_event, interval_seconds, best_path)
+
+
 def get_lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -356,12 +474,11 @@ def generate_data(args: argparse.Namespace, state: SharedState) -> Dict[str, Any
     session_scan = scan_session_files()
 
     try:
-        raw = run_codex_status_command(timeout_seconds=int(os.environ.get("CODEX_STATUS_TIMEOUT_SECONDS", "20")))
-        usage = parse_codex_status(raw, args.interval)
+        usage = parse_latest_rate_limits(args.interval)
         payload: Dict[str, Any] = {
             "ok": True,
             "generated_at": utc_now(),
-            "source": "codex_status",
+            "source": "codex_session_rate_limits",
             "http": http_info,
             "usage": usage,
             "session_scan": session_scan,
@@ -372,7 +489,7 @@ def generate_data(args: argparse.Namespace, state: SharedState) -> Dict[str, Any
             "ok": False,
             "generated_at": utc_now(),
             "error": str(exc),
-            "source": "codex_status",
+            "source": "codex_session_rate_limits",
             "http": http_info,
             "session_scan": session_scan,
         }

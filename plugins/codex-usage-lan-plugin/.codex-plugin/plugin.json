@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-lan",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Start a LAN HTTP server for Codex usage data when Codex starts.",
   "license": "MIT",
   "keywords": [

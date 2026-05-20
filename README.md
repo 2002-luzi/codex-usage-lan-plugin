@@ -165,17 +165,35 @@ Successful generation:
 {
   "ok": true,
   "generated_at": "2026-05-20T10:00:00Z",
-  "source": "codex_status",
+  "source": "codex_session_rate_limits",
   "usage": {
     "five_h_pct": 80,
+    "five_h_used_pct": 20,
     "five_h_reset": "1h 23m",
+    "five_h_reset_at": "2026-05-20T11:23:00Z",
     "weekly_pct": 55,
+    "weekly_used_pct": 45,
     "weekly_reset": "2d 4h",
+    "weekly_reset_at": "2026-05-22T14:00:00Z",
     "model": "gpt-5.3-codex",
-    "account": "user@example.com",
+    "account": "",
+    "plan_type": "plus",
     "scraped_at": "2026-05-20T10:00:00Z",
-    "sample_interval_seconds": 60
+    "sample_interval_seconds": 60,
+    "source_file": "~/.codex/sessions/2026/05/20/rollout-...jsonl"
   }
+}
+```
+
+Immediately after startup, `/data.json` can briefly show a startup placeholder while the background refresh reads the latest Codex session file:
+
+```json
+{
+  "ok": false,
+  "generated_at": "2026-05-20T10:00:00Z",
+  "source": "startup",
+  "status": "starting",
+  "message": "usage data refresh is running in the background"
 }
 ```
 
@@ -185,7 +203,8 @@ On failure, the server still writes JSON:
 {
   "ok": false,
   "generated_at": "2026-05-20T10:00:00Z",
-  "error": "could not parse usage percentages from codex status output"
+  "source": "codex_session_rate_limits",
+  "error": "could not find Codex rate_limits events in session files"
 }
 ```
 
@@ -193,7 +212,7 @@ On failure, the server still writes JSON:
 
 ### No usage data
 
-Check whether `codex` is on `PATH` for the process that starts the plugin. You can also set `CODEX_BIN` to an explicit executable path. Run the script manually and inspect stderr logs.
+The server reads Codex `rate_limits` events from `~/.codex/sessions/**/*.jsonl`. Run at least one Codex turn after login, then refresh `/data.json`. If your Codex session directory is somewhere else, set `CODEX_USAGE_LAN_SESSION_DIR`.
 
 ### Port 8000 is occupied
 
