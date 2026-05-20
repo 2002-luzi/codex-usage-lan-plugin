@@ -388,14 +388,32 @@ def generate_data(args: argparse.Namespace, state: SharedState) -> Dict[str, Any
     return payload
 
 
+def write_startup_payload(args: argparse.Namespace, state: SharedState) -> None:
+    data_path = pathlib.Path(args.dir).expanduser() / "data.json"
+    payload = {
+        "ok": False,
+        "generated_at": utc_now(),
+        "status": "starting",
+        "source": "startup",
+        "http": build_http_info(args.host, args.port, data_path),
+        "message": "usage data refresh is running in the background",
+    }
+    try:
+        atomic_write_json(data_path, payload)
+    except Exception as exc:
+        log(f"failed to write startup payload to {data_path}: {exc}")
+        payload["write_error"] = str(exc)
+    state.set_payload(payload)
+
+
 def refresh_loop(args: argparse.Namespace, state: SharedState) -> None:
     interval = max(1, int(args.interval))
     while True:
-        time.sleep(interval)
         try:
             generate_data(args, state)
         except Exception:
             log("unexpected refresh loop error:\n" + traceback.format_exc())
+        time.sleep(interval)
 
 
 class UsageRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -600,7 +618,7 @@ def main(argv: List[str]) -> int:
     state = SharedState(args.host, args.port, data_path)
 
     log("starting Codex Usage LAN MCP server")
-    generate_data(args, state)
+    write_startup_payload(args, state)
 
     threading.Thread(target=refresh_loop, args=(args, state), daemon=True, name="codex-usage-refresh").start()
     threading.Thread(target=run_http_server, args=(args, state), daemon=True, name="codex-usage-http").start()

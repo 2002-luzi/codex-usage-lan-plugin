@@ -21,9 +21,9 @@ codex-usage-lan-plugin/
 1. Codex starts the plugin.
 2. Codex reads `.codex-plugin/plugin.json`.
 3. The plugin points `mcpServers` to `.mcp.json`.
-4. Codex starts the bundled MCP server with `python3 ./bin/codex_usage_lan_mcp.py`.
-5. The MCP server immediately generates `~/.codex-usage-lan/public/data.json`.
-6. A background thread refreshes `data.json` every 60 seconds.
+4. Codex starts the bundled MCP server from the plugin directory with `python3 ./bin/codex_usage_lan_mcp.py`.
+5. The MCP server immediately writes a startup `~/.codex-usage-lan/public/data.json`.
+6. A background thread refreshes `data.json` with Codex usage data every 60 seconds.
 7. A second background thread serves `/data.json` and `/healthz` over HTTP.
 
 This plugin does not declare hooks and does not require `/hooks` trust.
@@ -95,12 +95,16 @@ Then add an entry to `~/.agents/plugins/marketplace.json`:
 `.mcp.json` uses a plugin-relative script path:
 
 ```json
+"cwd": ".",
 "args": ["./bin/codex_usage_lan_mcp.py", "--host", "0.0.0.0", "--port", "8000", "--interval", "60", "--dir", "~/.codex-usage-lan/public"]
 ```
 
-If Codex relative path handling is unstable in your environment, change the first arg to an absolute path:
+The `cwd` entry is important. Without it, Codex may start the MCP process from the current project directory instead of the installed plugin directory, causing `./bin/codex_usage_lan_mcp.py` to fail before the MCP initialize handshake.
+
+If Codex relative path handling is unstable in your environment, change `cwd` and the first arg to absolute paths:
 
 ```json
+"cwd": "/absolute/path/to/codex-usage-lan-plugin",
 "args": ["/absolute/path/to/codex-usage-lan-plugin/bin/codex_usage_lan_mcp.py", "--host", "0.0.0.0", "--port", "8000", "--interval", "60", "--dir", "~/.codex-usage-lan/public"]
 ```
 

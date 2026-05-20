@@ -2,6 +2,7 @@
   "mcpServers": {
     "codex-usage-lan": {
       "command": "python3",
+      "cwd": ".",
       "args": [
         "./bin/codex_usage_lan_mcp.py",
         "--host",
