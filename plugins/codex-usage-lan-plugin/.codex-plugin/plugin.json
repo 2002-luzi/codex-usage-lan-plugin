@@ -1,0 +1,24 @@
+{
+  "name": "codex-usage-lan",
+  "version": "0.1.0",
+  "description": "Start a LAN HTTP server for Codex usage data when Codex starts.",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "usage",
+    "mcp",
+    "lan",
+    "esp32"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex Usage LAN",
+    "shortDescription": "Expose Codex usage data as LAN JSON.",
+    "longDescription": "Starts a bundled MCP server that refreshes Codex usage data and shares data.json over HTTP for local network clients.",
+    "developerName": "Local",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ]
+  }
+}

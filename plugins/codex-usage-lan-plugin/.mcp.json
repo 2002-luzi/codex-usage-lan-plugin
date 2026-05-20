@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "codex-usage-lan": {
+      "command": "python3",
+      "args": [
+        "./bin/codex_usage_lan_mcp.py",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--interval",
+        "60",
+        "--dir",
+        "~/.codex-usage-lan/public"
+      ]
+    }
+  }
+}
