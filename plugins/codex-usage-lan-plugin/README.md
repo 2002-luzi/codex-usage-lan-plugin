@@ -1,6 +1,6 @@
 # Codex Usage LAN
 
-Codex Usage LAN is a Codex plugin that starts a bundled MCP server. The MCP server refreshes Codex usage data in the background and exposes `data.json` on the local network for clients such as ESP32.
+Codex Usage LAN is a Codex plugin that starts a bundled MCP server. The MCP server refreshes Codex usage data in the background and exposes `data.json` on the local network for clients such as ESP32, so that edge-based devices can conviniently fetch and display the Codex usage data.
 
 ## Directory Structure
 
@@ -23,10 +23,24 @@ codex-usage-lan-plugin/
 3. The plugin points `mcpServers` to `.mcp.json`.
 4. Codex starts the bundled MCP server from the plugin directory with `python3 ./bin/codex_usage_lan_mcp.py`.
 5. The MCP server immediately writes a startup `~/.codex-usage-lan/public/data.json`.
-6. A background thread refreshes `data.json` with Codex OAuth usage data every 60 seconds.
-7. A second background thread serves `/data.json` and `/healthz` over HTTP.
+6. A background thread obtains the Codex OAuth refresh token from `~/.codex/auth.json`,  then obtains the Codex usage data every 60 seconds.
+7. A second background thread starts a http server on port 8000 by default to serve `/data.json` and `/healthz`.
 
-This plugin does not declare hooks and does not require `/hooks` trust.
+## Install
+After adding this repo as a marketplace source, install the plugin by running:
+
+```bash
+codex plugin add codex-usage-lan@codex-plugins-luzioops
+```
+
+Restart Codex to apply the changes.
+
+## Verify Installation
+
+1. Restart Codex.
+2. Input `/mcp` in the chat input box to open the MCP server list, you should see `codex-usage-lan` in the list.
+3. For Desktop App/ IDE Extension users, you may need to open a certain session to actually start the MCP server.
+4. Run `curl http://127.0.0.1:8000/data.json`. You should see the `data.json` content.
 
 ## Manual Run
 
@@ -38,92 +52,12 @@ python3 bin/codex_usage_lan_mcp.py --host 0.0.0.0 --port 8000 --interval 60
 
 The script is also a stdio MCP server. Logs go to stderr only. stdout is reserved for newline-delimited JSON-RPC.
 
-## Test
-
-In one terminal, run the server:
-
-```bash
-python3 bin/codex_usage_lan_mcp.py --host 0.0.0.0 --port 8000 --interval 60
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:8000/data.json
-curl http://127.0.0.1:8000/healthz
-python3 test/test_http_client.py
-```
-
-The test client defaults to `http://127.0.0.1:8000/data.json` and also checks `/healthz`.
-
-## Install Into Codex Local Marketplace
-
-One simple local layout is:
-
-```bash
-mkdir -p ~/plugins ~/.agents/plugins
-cp -R codex-usage-lan-plugin ~/plugins/codex-usage-lan
-```
-
-Then add an entry to `~/.agents/plugins/marketplace.json`:
-
-```json
-{
-  "name": "local",
-  "interface": {
-    "displayName": "Local"
-  },
-  "plugins": [
-    {
-      "name": "codex-usage-lan",
-      "source": {
-        "source": "local",
-        "path": "./plugins/codex-usage-lan"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
-  ]
-}
-```
-
-## Relative And Absolute MCP Paths
-
-`.mcp.json` uses a plugin-relative script path:
-
-```json
-"cwd": ".",
-"args": ["./bin/codex_usage_lan_mcp.py", "--host", "0.0.0.0", "--port", "8000", "--interval", "60", "--dir", "~/.codex-usage-lan/public"]
-```
-
-The `cwd` entry is important. Without it, Codex may start the MCP process from the current project directory instead of the installed plugin directory, causing `./bin/codex_usage_lan_mcp.py` to fail before the MCP initialize handshake.
-
-If Codex relative path handling is unstable in your environment, change `cwd` and the first arg to absolute paths:
-
-```json
-"cwd": "/absolute/path/to/codex-usage-lan-plugin",
-"args": ["/absolute/path/to/codex-usage-lan-plugin/bin/codex_usage_lan_mcp.py", "--host", "0.0.0.0", "--port", "8000", "--interval", "60", "--dir", "~/.codex-usage-lan/public"]
-```
-
-## Check In Codex
-
-After starting Codex with the plugin installed, run:
-
-```text
-/mcp
-```
-
-Look for the `codex-usage-lan` MCP server. The server exposes one tool named `codex_usage_lan_status`, which reports the HTTP server status, the `data.json` path, and the latest generated JSON.
-
 ## ESP32 URL
 
 Use the computer's LAN IP address:
 
 ```text
-http://电脑IP:8000/data.json
+http://computer_IP:8000/data.json
 ```
 
 Example:
@@ -236,8 +170,6 @@ The server scans `~/.codex` by default. Set `CODEX_USAGE_LAN_SESSION_DIR` if you
 
 ### Plugin did not start the MCP server
 
-Run `/mcp` inside Codex and confirm that `codex-usage-lan` is listed. If it is missing, verify the marketplace entry, `.codex-plugin/plugin.json`, and `.mcp.json`.
+Run `/mcp` inside Codex and confirm that `codex-usage-lan` is listed. 
 
-### stdout pollution breaks MCP
-
-MCP over stdio requires stdout to contain only JSON-RPC messages. This server writes all logs to stderr. If you modify the script, keep print-style logs off stdout.
+For Desktop App/ IDE Extension, you may need to **open a certain session** to actually start the MCP server.

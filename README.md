@@ -11,6 +11,7 @@ codex plugin marketplace add 2002-luzi/codex-plugins
 
 # Then browse and install (the marketplace name is derived from the repo name)
 codex plugin list --marketplace codex-plugins-luzioops
+codex plugin add codex-usage-lan@codex-plugins-luzioops
 
 ```
 
