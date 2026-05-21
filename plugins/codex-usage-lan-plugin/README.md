@@ -1,6 +1,8 @@
 # Codex Usage LAN
 
-Codex Usage LAN is a Codex plugin that starts a bundled MCP server. The MCP server refreshes Codex usage data in the background and exposes `data.json` on the local network for clients such as ESP32, so that edge-based devices can conviniently fetch and display the Codex usage data.
+Codex Usage LAN is a Codex plugin that starts a bundled MCP server. The MCP server refreshes Codex usage data in the background and exposes `data.json` on the local network for clients such as ESP32, so that edge-based devices can conveniently fetch and display the Codex usage data. With this plugin, a Codex usage monitoring device can be easily built like the one shown in the image,
+
+<img width="1448" height="1086" alt="image" src="https://github.com/user-attachments/assets/5a0379ca-8c78-49e5-ba0a-5fa5f7d18393" />
 
 ## Directory Structure
 
