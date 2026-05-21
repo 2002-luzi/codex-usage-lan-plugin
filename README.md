@@ -24,6 +24,6 @@ codex plugin list --marketplace codex-plugins-luzioops
    ```
    https://github.com/2002-luzi/codex-plugins.git
    ```
-   <img width="1974" height="1064" alt="image" src="https://github.com/user-attachments/assets/ffbae59f-41ae-4ee3-9d52-864273ecdcb3" />
+   <img width="881" height="641" alt="image" src="https://github.com/user-attachments/assets/a2c5f5e2-2fd4-417b-af5a-03296370a88b" />
 
 3. The plugin list appears as an available marketplace source.
